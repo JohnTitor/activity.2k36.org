@@ -4,7 +4,7 @@ export type CachePolicy = {
 };
 
 export const DEFAULT_CACHE_POLICY: CachePolicy = {
-  maxAgeSeconds: 60,
+  maxAgeSeconds: 180,
   staleWhileRevalidateSeconds: 300,
 };
 

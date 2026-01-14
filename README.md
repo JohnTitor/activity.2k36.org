@@ -1,6 +1,6 @@
 # activity.2k36.org
 
-Web app that shows the latest GitHub activity (up to 30 items).
+Web app that shows the latest GitHub activities.
 
 Included activity:
 
