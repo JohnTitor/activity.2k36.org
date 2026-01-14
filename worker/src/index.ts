@@ -13,11 +13,13 @@ import {
   cacheControlValue,
   classifyAge,
   DEFAULT_CACHE_POLICY,
+  ogCacheKey,
   profileCacheKey,
   revalidateLockKey,
   responseAgeSeconds,
   withExtraHeaders,
 } from "./cache";
+import { renderOgSvg } from "./og";
 
 function json(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
@@ -61,6 +63,38 @@ async function fetchGitHubUser(username: string, token?: string) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/og.svg") {
+      const cache = caches.default;
+      const cacheKey = ogCacheKey(request, env.GITHUB_USERNAME, env.SITE_DOMAIN);
+
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        return withExtraHeaders(cached, {
+          "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+          "x-cache": "HIT",
+        });
+      }
+
+      try {
+        const svg = await renderOgSvg({
+          username: env.GITHUB_USERNAME,
+          domain: env.SITE_DOMAIN,
+        });
+        const res = new Response(svg, {
+          status: 200,
+          headers: {
+            "content-type": "image/svg+xml; charset=utf-8",
+            "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+          },
+        });
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
+        return withExtraHeaders(res, { "x-cache": "MISS" });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Unknown error";
+        return json({ error: "upstream_error", message }, { status: 502 });
+      }
+    }
 
     if (url.pathname === "/api/activity.preview.json") {
       const policy = DEFAULT_CACHE_POLICY;

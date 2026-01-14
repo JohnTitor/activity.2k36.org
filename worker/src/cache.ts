@@ -30,6 +30,16 @@ export function activityPreviewCacheKey(request: Request, username: string) {
   return new Request(url.toString(), { method: "GET" });
 }
 
+export function ogCacheKey(request: Request, username: string, domain: string) {
+  const url = new URL(request.url);
+  url.pathname = "/og.svg";
+  url.search = "";
+  url.searchParams.set("username", username);
+  url.searchParams.set("domain", domain);
+  url.searchParams.set("v", "1");
+  return new Request(url.toString(), { method: "GET" });
+}
+
 export function profileCacheKey(request: Request, username: string) {
   const url = new URL(request.url);
   url.pathname = "/api/profile.json";
