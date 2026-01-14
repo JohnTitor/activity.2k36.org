@@ -1,0 +1,9 @@
+name = "activity-2k36-org"
+main = "worker/src/index.ts"
+compatibility_date = "2026-01-14"
+
+assets = { directory = "./dist", binding = "ASSETS" }
+
+[vars]
+GITHUB_USERNAME = "JohnTitor"
+SITE_DOMAIN = "activity.2k36.org"
