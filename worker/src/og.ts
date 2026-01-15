@@ -12,6 +12,7 @@ function escapeXml(value: string) {
 
 function renderStaticOgSvg(params: { username: string; domain: string }) {
   const safeUsername = escapeXml(params.username);
+  const safeDomain = escapeXml(params.domain);
   const title = "activity.2k36.org";
   const subtitleLead = "Latest GitHub activities";
   const subtitle = `for @${safeUsername}`;

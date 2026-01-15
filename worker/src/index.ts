@@ -9,13 +9,10 @@ type Env = {
 import { getRecentActivity, getRecentActivityPreview } from "./github/events";
 import {
   activityCacheKey,
-  activityFallbackCacheKey,
   activityPreviewCacheKey,
-  activityPreviewFallbackCacheKey,
   cacheControlValue,
   classifyAge,
   DEFAULT_CACHE_POLICY,
-  fallbackCacheControlValue,
   ogCacheKey,
   profileCacheKey,
   revalidateLockKey,
@@ -31,11 +28,6 @@ function json(data: unknown, init?: ResponseInit) {
     ...init,
     headers,
   });
-}
-
-function isRateLimitError(error: unknown) {
-  if (!(error instanceof Error)) return false;
-  return /\b403\b/.test(error.message) || /rate limit/i.test(error.message);
 }
 
 type GitHubUserApiResponse = {
@@ -119,7 +111,6 @@ export default {
       const policy = DEFAULT_CACHE_POLICY;
       const cache = caches.default;
       const cacheKey = activityPreviewCacheKey(request, env.GITHUB_USERNAME);
-      const fallbackCacheKey = activityPreviewFallbackCacheKey(request, env.GITHUB_USERNAME);
 
       const cached = await cache.match(cacheKey);
       if (cached) {
@@ -154,13 +145,7 @@ export default {
                       "x-generated-at": fresh.generatedAt,
                     },
                   });
-                  const fallbackRes = withExtraHeaders(freshRes.clone(), {
-                    "cache-control": fallbackCacheControlValue(),
-                  });
-                  await Promise.all([
-                    cache.put(cacheKey, freshRes.clone()),
-                    cache.put(fallbackCacheKey, fallbackRes),
-                  ]);
+                  await cache.put(cacheKey, freshRes.clone());
                 } catch {
                   // Keep serving cached response.
                 }
@@ -189,23 +174,9 @@ export default {
             "x-generated-at": fresh.generatedAt,
           },
         });
-        const fallbackRes = withExtraHeaders(res.clone(), {
-          "cache-control": fallbackCacheControlValue(),
-        });
-        ctx.waitUntil(
-          Promise.all([cache.put(cacheKey, res.clone()), cache.put(fallbackCacheKey, fallbackRes)]),
-        );
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return withExtraHeaders(res, { "x-cache": "MISS" });
       } catch (e) {
-        if (isRateLimitError(e)) {
-          const cached = await cache.match(fallbackCacheKey);
-          if (cached) {
-            return withExtraHeaders(cached, {
-              "cache-control": cacheControlValue(policy),
-              "x-cache": "STALE-FALLBACK",
-            });
-          }
-        }
         const message = e instanceof Error ? e.message : "Unknown error";
         return json({ error: "upstream_error", message }, { status: 502 });
       }
@@ -279,7 +250,6 @@ export default {
       const policy = DEFAULT_CACHE_POLICY;
       const cache = caches.default;
       const cacheKey = activityCacheKey(request, env.GITHUB_USERNAME);
-      const fallbackCacheKey = activityFallbackCacheKey(request, env.GITHUB_USERNAME);
 
       const cached = await cache.match(cacheKey);
       if (cached) {
@@ -310,13 +280,7 @@ export default {
                       "x-generated-at": fresh.generatedAt,
                     },
                   });
-                  const fallbackRes = withExtraHeaders(freshRes.clone(), {
-                    "cache-control": fallbackCacheControlValue(),
-                  });
-                  await Promise.all([
-                    cache.put(cacheKey, freshRes.clone()),
-                    cache.put(fallbackCacheKey, fallbackRes),
-                  ]);
+                  await cache.put(cacheKey, freshRes.clone());
                 } catch {
                   // Keep serving cached response.
                 }
@@ -345,23 +309,9 @@ export default {
             "x-generated-at": fresh.generatedAt,
           },
         });
-        const fallbackRes = withExtraHeaders(res.clone(), {
-          "cache-control": fallbackCacheControlValue(),
-        });
-        ctx.waitUntil(
-          Promise.all([cache.put(cacheKey, res.clone()), cache.put(fallbackCacheKey, fallbackRes)]),
-        );
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return withExtraHeaders(res, { "x-cache": "MISS" });
       } catch (e) {
-        if (isRateLimitError(e)) {
-          const cached = await cache.match(fallbackCacheKey);
-          if (cached) {
-            return withExtraHeaders(cached, {
-              "cache-control": cacheControlValue(policy),
-              "x-cache": "STALE-FALLBACK",
-            });
-          }
-        }
         const message = e instanceof Error ? e.message : "Unknown error";
         return json({ error: "upstream_error", message }, { status: 502 });
       }
