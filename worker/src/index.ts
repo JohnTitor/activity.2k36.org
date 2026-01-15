@@ -65,15 +65,21 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/og.svg") {
+      const bypassCache =
+        url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1" ||
+        url.searchParams.has("nocache");
       const cache = caches.default;
       const cacheKey = ogCacheKey(request, env.GITHUB_USERNAME, env.SITE_DOMAIN);
 
-      const cached = await cache.match(cacheKey);
-      if (cached) {
-        return withExtraHeaders(cached, {
-          "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
-          "x-cache": "HIT",
-        });
+      if (!bypassCache) {
+        const cached = await cache.match(cacheKey);
+        if (cached) {
+          return withExtraHeaders(cached, {
+            "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+            "x-cache": "HIT",
+          });
+        }
       }
 
       try {
@@ -81,15 +87,20 @@ export default {
           username: env.GITHUB_USERNAME,
           domain: env.SITE_DOMAIN,
         });
+        const cacheControl = bypassCache
+          ? "no-store"
+          : "public, max-age=86400, stale-while-revalidate=604800";
         const res = new Response(svg, {
           status: 200,
           headers: {
             "content-type": "image/svg+xml; charset=utf-8",
-            "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+            "cache-control": cacheControl,
           },
         });
-        ctx.waitUntil(cache.put(cacheKey, res.clone()));
-        return withExtraHeaders(res, { "x-cache": "MISS" });
+        if (!bypassCache) {
+          ctx.waitUntil(cache.put(cacheKey, res.clone()));
+        }
+        return withExtraHeaders(res, { "x-cache": bypassCache ? "BYPASS" : "MISS" });
       } catch (e) {
         const message = e instanceof Error ? e.message : "Unknown error";
         return json({ error: "upstream_error", message }, { status: 502 });

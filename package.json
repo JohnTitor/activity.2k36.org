@@ -17,9 +17,7 @@
   },
   "dependencies": {
     "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "satori": "^0.18.3",
-    "satori-html": "^0.3.2"
+    "react-dom": "^19.2.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260114.0",
