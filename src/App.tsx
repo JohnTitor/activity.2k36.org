@@ -121,11 +121,11 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-3">
               <a
                 className="rounded-full border border-zinc-200/70 bg-white/50 px-4 py-2 text-s text-zinc-700 shadow-sm backdrop-blur hover:text-zinc-900 dark:border-zinc-800/70 dark:bg-zinc-900/30 dark:text-zinc-300 dark:hover:text-zinc-100"
-                href="https://www.2k36.org/"
+                href="https://www.2k36.org/en/about"
                 target="_blank"
                 rel="noreferrer"
               >
-                2k36.org
+                About me
               </a>
               <a
                 className="rounded-full border border-zinc-200/70 bg-white/50 px-4 py-2 text-s text-zinc-700 shadow-sm backdrop-blur hover:text-zinc-900 dark:border-zinc-800/70 dark:bg-zinc-900/30 dark:text-zinc-300 dark:hover:text-zinc-100"
