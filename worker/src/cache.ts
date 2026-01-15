@@ -8,8 +8,14 @@ export const DEFAULT_CACHE_POLICY: CachePolicy = {
   staleWhileRevalidateSeconds: 300,
 };
 
+export const FALLBACK_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7;
+
 export function cacheControlValue(policy: CachePolicy) {
   return `public, max-age=${policy.maxAgeSeconds}, stale-while-revalidate=${policy.staleWhileRevalidateSeconds}`;
+}
+
+export function fallbackCacheControlValue() {
+  return `public, max-age=${FALLBACK_CACHE_TTL_SECONDS}`;
 }
 
 export function activityCacheKey(request: Request, username: string) {
@@ -21,11 +27,31 @@ export function activityCacheKey(request: Request, username: string) {
   return new Request(url.toString(), { method: "GET" });
 }
 
+export function activityFallbackCacheKey(request: Request, username: string) {
+  const url = new URL(request.url);
+  url.pathname = "/api/activity.json";
+  url.search = "";
+  url.searchParams.set("username", username);
+  url.searchParams.set("fallback", "1");
+  url.searchParams.set("v", "1");
+  return new Request(url.toString(), { method: "GET" });
+}
+
 export function activityPreviewCacheKey(request: Request, username: string) {
   const url = new URL(request.url);
   url.pathname = "/api/activity.preview.json";
   url.search = "";
   url.searchParams.set("username", username);
+  url.searchParams.set("v", "1");
+  return new Request(url.toString(), { method: "GET" });
+}
+
+export function activityPreviewFallbackCacheKey(request: Request, username: string) {
+  const url = new URL(request.url);
+  url.pathname = "/api/activity.preview.json";
+  url.search = "";
+  url.searchParams.set("username", username);
+  url.searchParams.set("fallback", "1");
   url.searchParams.set("v", "1");
   return new Request(url.toString(), { method: "GET" });
 }
