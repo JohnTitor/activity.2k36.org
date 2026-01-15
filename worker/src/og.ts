@@ -14,7 +14,8 @@ function renderStaticOgSvg(params: { username: string; domain: string }) {
   const safeUsername = escapeXml(params.username);
   const safeDomain = escapeXml(params.domain);
   const title = "activity.2k36.org";
-  const subtitle = `Latest GitHub activities for @${safeUsername}`;
+  const subtitleLead = "Latest GitHub activities";
+  const subtitle = `for @${safeUsername}`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}">
@@ -31,11 +32,12 @@ function renderStaticOgSvg(params: { username: string; domain: string }) {
   <rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="#0a0a0b" />
   <rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="url(#accent1)" />
   <rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="url(#accent2)" />
-  <text x="72" y="280" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif" font-size="52" font-weight="600" fill="#f4f4f5">
+  <text x="${OG_WIDTH / 2}" y="280" text-anchor="middle" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif" font-size="52" font-weight="600" fill="#f4f4f5">
     ${title}
   </text>
-  <text x="72" y="338" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif" font-size="28" fill="#d4d4d8">
-    ${subtitle}
+  <text x="${OG_WIDTH / 2}" y="328" text-anchor="middle" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif" font-size="28" fill="#d4d4d8">
+    <tspan x="${OG_WIDTH / 2}" dy="0">${subtitleLead}</tspan>
+    <tspan x="${OG_WIDTH / 2}" dy="32">${subtitle}</tspan>
   </text>
 </svg>
 `;
