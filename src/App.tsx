@@ -215,8 +215,16 @@ export default function App() {
           {state.status === "loaded" ? <ActivityList items={state.data.items} /> : null}
         </main>
 
-        <footer className="mt-14 border-t border-zinc-200/70 pt-6 text-xs text-zinc-500 dark:border-zinc-800/70 dark:text-zinc-500">
+        <footer className="mt-14 flex items-center justify-between gap-4 border-t border-zinc-200/70 pt-6 text-xs text-zinc-500 dark:border-zinc-800/70 dark:text-zinc-500">
           <p className="font-mono text-[11px]">© 2026 Yuki Okushi. All Rights Reserved.</p>
+          <a
+            className="inline-flex font-mono text-[11px] underline-offset-2 hover:underline"
+            href="https://github.com/JohnTitor/activity.2k36.org"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Source code
+          </a>
         </footer>
       </div>
     </div>
