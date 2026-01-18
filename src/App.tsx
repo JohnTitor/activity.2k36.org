@@ -18,6 +18,117 @@ type ProfileState =
   | { status: "error" }
   | { status: "loaded"; profile: Profile };
 
+const ACTIVITY_CACHE_KEY = "activity-cache-v1";
+
+type CachedActivity = {
+  data: ActivityResponse;
+  cachedAt: string;
+  source: "preview" | "full";
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isActivityItem(value: unknown): value is ActivityResponse["items"][number] {
+  if (!isRecord(value)) return false;
+  const actor = value.actor;
+  const repo = value.repo;
+  return (
+    typeof value.id === "string" &&
+    typeof value.kind === "string" &&
+    typeof value.createdAt === "string" &&
+    typeof value.title === "string" &&
+    typeof value.url === "string" &&
+    isRecord(actor) &&
+    typeof actor.login === "string" &&
+    typeof actor.url === "string" &&
+    typeof actor.avatarUrl === "string" &&
+    isRecord(repo) &&
+    typeof repo.name === "string" &&
+    typeof repo.url === "string"
+  );
+}
+
+function isActivityResponse(value: unknown): value is ActivityResponse {
+  if (!isRecord(value)) return false;
+  if (typeof value.username !== "string") return false;
+  if (typeof value.generatedAt !== "string") return false;
+  if (!Array.isArray(value.items)) return false;
+  return value.items.every((item) => isActivityItem(item));
+}
+
+function isCachedActivity(value: unknown): value is CachedActivity {
+  if (!isRecord(value)) return false;
+  if (typeof value.cachedAt !== "string") return false;
+  if (value.source !== "preview" && value.source !== "full") return false;
+  return isActivityResponse(value.data);
+}
+
+function parseTimestamp(iso: string) {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
+function isNewerActivity(next: ActivityResponse, current: ActivityResponse) {
+  const nextTime = parseTimestamp(next.generatedAt);
+  const currentTime = parseTimestamp(current.generatedAt);
+  if (currentTime == null) return true;
+  if (nextTime == null) return false;
+  return nextTime > currentTime;
+}
+
+function shouldReplaceCached(
+  next: ActivityResponse,
+  source: CachedActivity["source"],
+  existing: CachedActivity,
+) {
+  const nextTime = parseTimestamp(next.generatedAt);
+  const prevTime = parseTimestamp(existing.data.generatedAt);
+  if (prevTime == null) return true;
+  if (nextTime == null) return false;
+  if (nextTime > prevTime) return true;
+  if (nextTime === prevTime && source === "full" && existing.source !== "full") return true;
+  return false;
+}
+
+function readCachedActivity(): CachedActivity | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(ACTIVITY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (isCachedActivity(parsed)) return parsed;
+    if (isActivityResponse(parsed)) {
+      const value: CachedActivity = {
+        data: parsed,
+        cachedAt: new Date().toISOString(),
+        source: "preview",
+      };
+      return value;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function writeCachedActivity(data: ActivityResponse, source: CachedActivity["source"]) {
+  if (typeof window === "undefined") return;
+  try {
+    const existing = readCachedActivity();
+    if (existing && !shouldReplaceCached(data, source, existing)) return;
+    const payload: CachedActivity = {
+      data,
+      cachedAt: new Date().toISOString(),
+      source,
+    };
+    window.localStorage.setItem(ACTIVITY_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore cache write failures (private mode, quota, etc).
+  }
+}
+
 function formatGeneratedAt(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -27,6 +138,13 @@ function formatGeneratedAt(iso: string) {
 export default function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [profileState, setProfileState] = useState<ProfileState>({ status: "loading" });
+
+  useEffect(() => {
+    const cached = readCachedActivity();
+    if (cached) {
+      setState({ status: "loaded", data: cached.data });
+    }
+  }, []);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -60,6 +178,15 @@ export default function App() {
   useEffect(() => {
     const ac = new AbortController();
 
+    function applyActivity(data: ActivityResponse, source: CachedActivity["source"]) {
+      if (ac.signal.aborted) return;
+      writeCachedActivity(data, source);
+      setState((prev) => {
+        if (prev.status === "loaded" && !isNewerActivity(data, prev.data)) return prev;
+        return { status: "loaded", data };
+      });
+    }
+
     async function fetchPreview() {
       try {
         const res = await fetch("/api/activity.preview.json", {
@@ -68,8 +195,7 @@ export default function App() {
         });
         if (!res.ok) return;
         const data = (await res.json()) as ActivityResponse;
-        if (ac.signal.aborted) return;
-        setState({ status: "loaded", data });
+        applyActivity(data, "preview");
       } catch {
         // Ignore preview errors and keep going.
       }
@@ -86,11 +212,17 @@ export default function App() {
           throw new Error(text || `HTTP ${res.status}`);
         }
         const data = (await res.json()) as ActivityResponse;
-        if (ac.signal.aborted) return;
-        setState({ status: "loaded", data });
+        applyActivity(data, "full");
       } catch (e) {
         if (ac.signal.aborted) return;
         const message = e instanceof Error ? e.message : "Unknown error";
+        const cached = readCachedActivity();
+        if (cached) {
+          setState((prev) =>
+            prev.status === "loaded" ? prev : { status: "loaded", data: cached.data },
+          );
+          return;
+        }
         setState((prev) => (prev.status === "loaded" ? prev : { status: "error", message }));
       }
     }

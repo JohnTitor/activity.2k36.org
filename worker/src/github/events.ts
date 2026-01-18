@@ -280,10 +280,7 @@ async function fetchEventsPage(
   return { events, nextUrl };
 }
 
-async function isForkRepo(
-  repoApiUrl: string,
-  memo: Map<string, boolean>,
-): Promise<boolean> {
+async function isForkRepo(repoApiUrl: string, memo: Map<string, boolean>): Promise<boolean> {
   const cached = memo.get(repoApiUrl);
   if (typeof cached === "boolean") return cached;
   try {
