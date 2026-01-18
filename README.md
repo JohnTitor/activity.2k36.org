@@ -26,34 +26,6 @@ Notes:
 pnpm install
 ```
 
-### (Optional) GitHub token (PAT)
-
-You can set `GITHUB_TOKEN` to avoid rate limiting and make the API more reliable.
-
-Also, the GitHub Events API may return **422 (pagination limited)** for deep pagination. With filters like “ignore forks” and “ignore push events”, it’s possible to not reach 30 items using Events alone.
-
-To mitigate this, when a token is available the Worker will:
-
-- Fetch events
-- Fetch PR details for PR-related events via the Pulls API (because Events payloads are trimmed)
-- If still not enough items, **supplement PRs using GitHub GraphQL search**
-
-#### Local (wrangler)
-
-Wrangler can read `.dev.vars`:
-
-```bash
-cp .env.example .dev.vars
-```
-
-#### Cloudflare (production)
-
-Store it as a Cloudflare secret:
-
-```bash
-wrangler secret put GITHUB_TOKEN
-```
-
 ### Run
 
 Use two terminals:

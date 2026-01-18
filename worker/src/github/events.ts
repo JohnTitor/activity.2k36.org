@@ -16,58 +16,17 @@ type GitHubEvent = {
   created_at: string;
 };
 
-type GitHubApiOptions = {
-  token?: string;
-};
-
-function ghHeaders({ token }: GitHubApiOptions) {
+function ghHeaders() {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
     "user-agent": "activity.2k36.org",
     "x-github-api-version": "2022-11-28",
   };
-  if (token) headers.authorization = `Bearer ${token}`;
   return headers;
 }
 
-async function fetchGitHubGraphQL<T>(
-  query: string,
-  variables: Record<string, unknown>,
-  options: GitHubApiOptions,
-): Promise<T> {
-  if (!options.token) throw new Error("Missing GITHUB_TOKEN for GitHub GraphQL API");
-
-  const res = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      ...ghHeaders(options),
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    const detail = text ? `: ${text.slice(0, 500)}` : "";
-    throw new Error(`GitHub GraphQL error ${res.status}${detail}`);
-  }
-
-  const json = JSON.parse(text) as { data?: T; errors?: Array<{ message?: string }> };
-  if (json.errors?.length) {
-    const msg =
-      json.errors
-        .map((e) => e.message)
-        .filter(Boolean)
-        .join(" | ") || "Unknown GraphQL error";
-    throw new Error(`GitHub GraphQL error: ${msg}`);
-  }
-  if (!json.data) throw new Error("GitHub GraphQL error: missing data");
-
-  return json.data;
-}
-
-async function fetchGitHubJson<T>(url: string, options: GitHubApiOptions): Promise<T> {
-  const res = await fetch(url, { headers: ghHeaders(options) });
+async function fetchGitHubJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { headers: ghHeaders() });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     const detail = text ? `: ${text.slice(0, 500)}` : "";
@@ -300,9 +259,8 @@ function parseNextLink(linkHeader: string | null): string | null {
 
 async function fetchEventsPage(
   url: string,
-  options: GitHubApiOptions,
 ): Promise<{ events: GitHubEvent[]; nextUrl: string | null }> {
-  const res = await fetch(url, { headers: ghHeaders(options) });
+  const res = await fetch(url, { headers: ghHeaders() });
   if (res.status === 422) {
     const text = await res.text().catch(() => "");
     // GitHub sometimes returns 422 for deep pagination:
@@ -322,114 +280,14 @@ async function fetchEventsPage(
   return { events, nextUrl };
 }
 
-type PrSearchNode = {
-  id: string;
-  title: string;
-  url: string;
-  createdAt: string;
-  state: "OPEN" | "CLOSED" | string;
-  mergedAt: string | null;
-  bodyText: string;
-  repository: {
-    nameWithOwner: string;
-    url: string;
-    isFork: boolean;
-  };
-  author: {
-    login: string;
-    url: string;
-    avatarUrl: string;
-  } | null;
-};
-
-async function searchPullRequestsGraphQL(options: {
-  username: string;
-  token: string;
-  first: number;
-}): Promise<ActivityItem[]> {
-  const q = `is:pr author:${options.username} sort:created-desc`;
-
-  const data = await fetchGitHubGraphQL<{
-    search: { nodes: Array<PrSearchNode | null> };
-  }>(
-    `
-      query($q: String!, $n: Int!) {
-        search(query: $q, type: ISSUE, first: $n) {
-          nodes {
-            ... on PullRequest {
-              id
-              title
-              url
-              createdAt
-              state
-              mergedAt
-              bodyText
-              repository {
-                nameWithOwner
-                url
-                isFork
-              }
-              author {
-                login
-                url
-                avatarUrl
-              }
-            }
-          }
-        }
-      }
-    `,
-    { q, n: options.first },
-    { token: options.token },
-  );
-
-  const items: ActivityItem[] = [];
-  for (const node of data.search.nodes) {
-    if (!node) continue;
-    if (node.repository.isFork) continue;
-    const author = node.author ?? {
-      login: options.username,
-      url: userHtmlUrl(options.username),
-      avatarUrl: `https://github.com/${options.username}.png`,
-    };
-
-    const kind = node.mergedAt
-      ? "pull_request_merged"
-      : node.state === "CLOSED"
-        ? "pull_request_closed"
-        : "pull_request_opened";
-
-    items.push({
-      id: `pr:${node.id}`,
-      kind,
-      createdAt: node.createdAt,
-      actor: {
-        login: author.login,
-        url: author.url,
-        avatarUrl: author.avatarUrl,
-      },
-      repo: {
-        name: node.repository.nameWithOwner,
-        url: node.repository.url,
-      },
-      title: node.title,
-      url: node.url,
-      summary: summarizeText(node.bodyText),
-    });
-  }
-
-  return items;
-}
-
 async function isForkRepo(
   repoApiUrl: string,
-  options: GitHubApiOptions,
   memo: Map<string, boolean>,
 ): Promise<boolean> {
   const cached = memo.get(repoApiUrl);
   if (typeof cached === "boolean") return cached;
   try {
-    const repo = await fetchGitHubJson<RepoApiResponse>(repoApiUrl, options);
+    const repo = await fetchGitHubJson<RepoApiResponse>(repoApiUrl);
     const isFork = repo.fork === true;
     memo.set(repoApiUrl, isFork);
     return isFork;
@@ -442,13 +300,12 @@ async function isForkRepo(
 
 async function fetchPullRequest(
   prApiUrl: string,
-  options: GitHubApiOptions,
   memo: Map<string, PullRequestApiResponse | null>,
 ) {
   const cached = memo.get(prApiUrl);
   if (cached !== undefined) return cached;
   try {
-    const pr = await fetchGitHubJson<PullRequestApiResponse>(prApiUrl, options);
+    const pr = await fetchGitHubJson<PullRequestApiResponse>(prApiUrl);
     memo.set(prApiUrl, pr);
     return pr;
   } catch {
@@ -459,7 +316,6 @@ async function fetchPullRequest(
 
 async function normalizeEvent(
   event: GitHubEvent,
-  options: GitHubApiOptions,
   prMemo: Map<string, PullRequestApiResponse | null>,
 ): Promise<ActivityItem | null> {
   const actor = {
@@ -513,7 +369,7 @@ async function normalizeEvent(
           : null;
     if (!prApiUrl) return null;
 
-    const pr = await fetchPullRequest(prApiUrl, options, prMemo);
+    const pr = await fetchPullRequest(prApiUrl, prMemo);
     const title = pr?.title?.trim();
     const url = pr?.html_url;
     if (!title || !url) return null;
@@ -570,7 +426,7 @@ async function normalizeEvent(
           : null;
     if (!prApiUrl) return null;
 
-    const pr = await fetchPullRequest(prApiUrl, options, prMemo);
+    const pr = await fetchPullRequest(prApiUrl, prMemo);
     const title = pr?.title?.trim();
     const url = payload.review?.html_url ?? pr?.html_url;
     if (!title || !url) return null;
@@ -608,7 +464,7 @@ async function normalizeEvent(
           : null;
     if (!prApiUrl) return null;
 
-    const pr = await fetchPullRequest(prApiUrl, options, prMemo);
+    const pr = await fetchPullRequest(prApiUrl, prMemo);
     const title = pr?.title?.trim();
     const url = payload.comment?.html_url;
     if (!title || !url) return null;
@@ -644,7 +500,6 @@ async function normalizeEvent(
 
 export async function getRecentActivity(options: {
   username: string;
-  token?: string;
   limit: number;
   perPage?: number;
   maxPages?: number;
@@ -667,15 +522,15 @@ export async function getRecentActivity(options: {
 
   while (nextUrl && pageCount < maxPages) {
     pageCount++;
-    const { events, nextUrl: next } = await fetchEventsPage(nextUrl, { token: options.token });
+    const { events, nextUrl: next } = await fetchEventsPage(nextUrl);
     if (!events.length) break;
 
     for (const ev of events) {
-      const item = await normalizeEvent(ev, { token: options.token }, prMemo);
+      const item = await normalizeEvent(ev, prMemo);
       if (!item) continue;
 
       // Ignore fork repos
-      if (await isForkRepo(ev.repo.url, { token: options.token }, forkMemo)) continue;
+      if (await isForkRepo(ev.repo.url, forkMemo)) continue;
 
       if (seenUrls.has(item.url)) continue;
       seenUrls.add(item.url);
@@ -693,26 +548,6 @@ export async function getRecentActivity(options: {
     nextUrl = next;
   }
 
-  // If we couldn't fill enough items (often due to Events pagination limits),
-  // try adding PRs via GraphQL search when a token is available.
-  if (items.length < limit && options.token) {
-    try {
-      const prs = await searchPullRequestsGraphQL({
-        username: options.username,
-        token: options.token,
-        first: 50,
-      });
-      for (const pr of prs) {
-        if (seenUrls.has(pr.url)) continue;
-        seenUrls.add(pr.url);
-        items.push(pr);
-        if (items.length >= limit) break;
-      }
-    } catch {
-      // Ignore and return what we have.
-    }
-  }
-
   items.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
   return {
@@ -724,7 +559,6 @@ export async function getRecentActivity(options: {
 
 export async function getRecentActivityPreview(options: {
   username: string;
-  token?: string;
   limit: number;
   perPage?: number;
 }): Promise<ActivityResponse> {
@@ -735,7 +569,7 @@ export async function getRecentActivityPreview(options: {
   url.searchParams.set("per_page", String(perPage));
   url.searchParams.set("page", "1");
 
-  const { events } = await fetchEventsPage(url.toString(), { token: options.token });
+  const { events } = await fetchEventsPage(url.toString());
 
   const items: ActivityItem[] = [];
   const seenUrls = new Set<string>();

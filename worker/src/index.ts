@@ -2,8 +2,6 @@ type Env = {
   ASSETS: Fetcher;
   GITHUB_USERNAME: string;
   SITE_DOMAIN: string;
-  // Optional. Set via `wrangler secret put GITHUB_TOKEN`
-  GITHUB_TOKEN?: string;
 };
 
 import { getRecentActivity, getRecentActivityPreview } from "./github/events";
@@ -36,13 +34,12 @@ type GitHubUserApiResponse = {
   avatar_url?: string;
 };
 
-async function fetchGitHubUser(username: string, token?: string) {
+async function fetchGitHubUser(username: string) {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
     "user-agent": "activity.2k36.org",
     "x-github-api-version": "2022-11-28",
   };
-  if (token) headers.authorization = `Bearer ${token}`;
 
   const res = await fetch(`https://api.github.com/users/${username}`, { headers });
   if (!res.ok) {
@@ -135,7 +132,6 @@ export default {
                 try {
                   const fresh = await getRecentActivityPreview({
                     username: env.GITHUB_USERNAME,
-                    token: env.GITHUB_TOKEN,
                     limit: 30,
                   });
                   const freshRes = json(fresh, {
@@ -164,7 +160,6 @@ export default {
       try {
         const fresh = await getRecentActivityPreview({
           username: env.GITHUB_USERNAME,
-          token: env.GITHUB_TOKEN,
           limit: 30,
         });
         const res = json(fresh, {
@@ -204,7 +199,7 @@ export default {
             ctx.waitUntil(
               (async () => {
                 try {
-                  const fresh = await fetchGitHubUser(env.GITHUB_USERNAME, env.GITHUB_TOKEN);
+                  const fresh = await fetchGitHubUser(env.GITHUB_USERNAME);
                   const freshRes = json(fresh, {
                     status: 200,
                     headers: {
@@ -229,7 +224,7 @@ export default {
 
       // Cache miss: fetch synchronously.
       try {
-        const fresh = await fetchGitHubUser(env.GITHUB_USERNAME, env.GITHUB_TOKEN);
+        const fresh = await fetchGitHubUser(env.GITHUB_USERNAME);
         const now = new Date().toISOString();
         const res = json(fresh, {
           status: 200,
@@ -270,7 +265,6 @@ export default {
                 try {
                   const fresh = await getRecentActivity({
                     username: env.GITHUB_USERNAME,
-                    token: env.GITHUB_TOKEN,
                     limit: 30,
                   });
                   const freshRes = json(fresh, {
@@ -299,7 +293,6 @@ export default {
       try {
         const fresh = await getRecentActivity({
           username: env.GITHUB_USERNAME,
-          token: env.GITHUB_TOKEN,
           limit: 30,
         });
         const res = json(fresh, {
