@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { ActivityList } from "./components/ActivityList";
 import type { ActivityResponse } from "./lib/activity/types";
 
+type ActivitySource = "preview" | "full";
+
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "loaded"; data: ActivityResponse };
+  | { status: "loaded"; data: ActivityResponse; source: ActivitySource };
 
 type Profile = {
   login: string;
@@ -23,7 +25,7 @@ const ACTIVITY_CACHE_KEY = "activity-cache-v1";
 type CachedActivity = {
   data: ActivityResponse;
   cachedAt: string;
-  source: "preview" | "full";
+  source: ActivitySource;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,17 +72,42 @@ function parseTimestamp(iso: string) {
   return Number.isNaN(t) ? null : t;
 }
 
-function isNewerActivity(next: ActivityResponse, current: ActivityResponse) {
+function isSameActivitySnapshot(next: ActivityResponse, current: ActivityResponse) {
+  if (next.items.length !== current.items.length) return false;
+  return next.items.every((item, index) => {
+    const other = current.items[index];
+    if (!other) return false;
+    return (
+      item.id === other.id &&
+      item.kind === other.kind &&
+      item.title === other.title &&
+      item.url === other.url &&
+      item.summary === other.summary &&
+      item.reviewState === other.reviewState
+    );
+  });
+}
+
+function shouldApplyActivity(next: ActivityResponse, source: ActivitySource, prev: LoadState) {
+  if (prev.status !== "loaded") return true;
+
   const nextTime = parseTimestamp(next.generatedAt);
-  const currentTime = parseTimestamp(current.generatedAt);
-  if (currentTime == null) return true;
-  if (nextTime == null) return false;
-  return nextTime > currentTime;
+  const prevTime = parseTimestamp(prev.data.generatedAt);
+
+  if (prevTime == null && nextTime != null) return true;
+  if (nextTime == null && prevTime != null) return false;
+  if (nextTime != null && prevTime != null) {
+    if (nextTime > prevTime) return true;
+    if (nextTime < prevTime) return false;
+  }
+
+  if (source === "full" && prev.source !== "full") return true;
+  return !isSameActivitySnapshot(next, prev.data);
 }
 
 function shouldReplaceCached(
   next: ActivityResponse,
-  source: CachedActivity["source"],
+  source: ActivitySource,
   existing: CachedActivity,
 ) {
   const nextTime = parseTimestamp(next.generatedAt);
@@ -113,7 +140,7 @@ function readCachedActivity(): CachedActivity | null {
   return null;
 }
 
-function writeCachedActivity(data: ActivityResponse, source: CachedActivity["source"]) {
+function writeCachedActivity(data: ActivityResponse, source: ActivitySource) {
   if (typeof window === "undefined") return;
   try {
     const existing = readCachedActivity();
@@ -142,7 +169,7 @@ export default function App() {
   useEffect(() => {
     const cached = readCachedActivity();
     if (cached) {
-      setState({ status: "loaded", data: cached.data });
+      setState({ status: "loaded", data: cached.data, source: cached.source });
     }
   }, []);
 
@@ -178,12 +205,12 @@ export default function App() {
   useEffect(() => {
     const ac = new AbortController();
 
-    function applyActivity(data: ActivityResponse, source: CachedActivity["source"]) {
+    function applyActivity(data: ActivityResponse, source: ActivitySource) {
       if (ac.signal.aborted) return;
       writeCachedActivity(data, source);
       setState((prev) => {
-        if (prev.status === "loaded" && !isNewerActivity(data, prev.data)) return prev;
-        return { status: "loaded", data };
+        if (!shouldApplyActivity(data, source, prev)) return prev;
+        return { status: "loaded", data, source };
       });
     }
 
@@ -219,7 +246,9 @@ export default function App() {
         const cached = readCachedActivity();
         if (cached) {
           setState((prev) =>
-            prev.status === "loaded" ? prev : { status: "loaded", data: cached.data },
+            prev.status === "loaded"
+              ? prev
+              : { status: "loaded", data: cached.data, source: cached.source },
           );
           return;
         }
