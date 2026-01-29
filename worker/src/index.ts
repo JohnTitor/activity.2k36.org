@@ -132,7 +132,7 @@ export default {
                 try {
                   const fresh = await getRecentActivityPreview({
                     username: env.GITHUB_USERNAME,
-                    limit: 30,
+                    limit: 20,
                   });
                   const freshRes = json(fresh, {
                     status: 200,
@@ -160,7 +160,7 @@ export default {
       try {
         const fresh = await getRecentActivityPreview({
           username: env.GITHUB_USERNAME,
-          limit: 30,
+          limit: 20,
         });
         const res = json(fresh, {
           status: 200,
@@ -265,7 +265,7 @@ export default {
                 try {
                   const fresh = await getRecentActivity({
                     username: env.GITHUB_USERNAME,
-                    limit: 30,
+                    limit: 20,
                   });
                   const freshRes = json(fresh, {
                     status: 200,
@@ -293,7 +293,7 @@ export default {
       try {
         const fresh = await getRecentActivity({
           username: env.GITHUB_USERNAME,
-          limit: 30,
+          limit: 20,
         });
         const res = json(fresh, {
           status: 200,
