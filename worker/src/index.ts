@@ -5,6 +5,7 @@ type Env = {
 };
 
 import { getRecentActivity, getRecentActivityPreview } from "./github/events";
+import { fetchGitHubJson, GitHubRequestError } from "./github/client";
 import {
   activityCacheKey,
   activityPreviewCacheKey,
@@ -13,8 +14,10 @@ import {
   DEFAULT_CACHE_POLICY,
   ogCacheKey,
   profileCacheKey,
+  readRateLimitReset,
   revalidateLockKey,
   responseAgeSeconds,
+  writeRateLimitReset,
   withExtraHeaders,
 } from "./cache";
 import { renderOgSvg } from "./og";
@@ -34,27 +37,66 @@ type GitHubUserApiResponse = {
   avatar_url?: string;
 };
 
-async function fetchGitHubUser(username: string) {
-  const headers: Record<string, string> = {
-    accept: "application/vnd.github+json",
-    "user-agent": "activity.2k36.org",
-    "x-github-api-version": "2022-11-28",
-  };
+type RateLimitInfo = {
+  remaining?: number;
+  reset?: number;
+};
 
-  const res = await fetch(`https://api.github.com/users/${username}`, { headers });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const detail = text ? `: ${text.slice(0, 500)}` : "";
-    throw new Error(`GitHub API error ${res.status}${detail}`);
+function rateLimitHeaders(rateLimit?: RateLimitInfo) {
+  if (!rateLimit) return {};
+  const headers: Record<string, string> = {};
+  if (rateLimit.remaining != null) headers["x-rate-limit-remaining"] = String(rateLimit.remaining);
+  if (rateLimit.reset != null) headers["x-rate-limit-reset"] = String(rateLimit.reset);
+  return headers;
+}
+
+async function fetchGitHubUser(username: string) {
+  const result = await fetchGitHubJson<GitHubUserApiResponse>(
+    `https://api.github.com/users/${username}`,
+  );
+  if (!result.ok) throw new GitHubRequestError(result.error);
+
+  const u = result.data;
+  if (!u.login || !u.avatar_url) {
+    throw new GitHubRequestError({
+      kind: "unknown",
+      message: "GitHub API error: invalid user response",
+      requestId: result.meta.requestId,
+    });
   }
-  const u = (await res.json()) as GitHubUserApiResponse;
-  if (!u.login || !u.avatar_url) throw new Error("GitHub API error: invalid user response");
 
   return {
-    login: u.login,
-    url: u.html_url ?? `https://github.com/${u.login}`,
-    avatarUrl: u.avatar_url,
+    profile: {
+      login: u.login,
+      url: u.html_url ?? `https://github.com/${u.login}`,
+      avatarUrl: u.avatar_url,
+    },
+    rateLimit: {
+      remaining: result.meta.rateLimitRemaining,
+      reset: result.meta.rateLimitReset,
+    } satisfies RateLimitInfo,
   };
+}
+
+async function getActiveRateLimitReset(
+  cache: Cache,
+  request: Request,
+  username: string,
+): Promise<number | null> {
+  const reset = await readRateLimitReset(cache, request, username);
+  if (!reset) return null;
+  const now = Math.floor(Date.now() / 1000);
+  return reset > now ? reset : null;
+}
+
+async function storeRateLimitReset(
+  cache: Cache,
+  request: Request,
+  username: string,
+  reset?: number,
+) {
+  if (!reset) return;
+  await writeRateLimitReset(cache, request, username, reset);
 }
 
 export default {
@@ -113,8 +155,18 @@ export default {
       if (cached) {
         const age = responseAgeSeconds(cached);
         const state = classifyAge(age, policy);
+        let activeReset: number | null = null;
 
         if (state !== "fresh") {
+          activeReset = await getActiveRateLimitReset(cache, request, env.GITHUB_USERNAME);
+          if (activeReset) {
+            return withExtraHeaders(cached, {
+              "cache-control": cacheControlValue(policy),
+              "x-cache": "STALE",
+              "x-rate-limit-reset": String(activeReset),
+            });
+          }
+
           const lockKey = revalidateLockKey(
             request,
             "/api/activity.preview.json",
@@ -134,15 +186,32 @@ export default {
                     username: env.GITHUB_USERNAME,
                     limit: 20,
                   });
-                  const freshRes = json(fresh, {
+                  const freshRes = json(fresh.data, {
                     status: 200,
                     headers: {
                       "cache-control": cacheControlValue(policy),
-                      "x-generated-at": fresh.generatedAt,
+                      "x-generated-at": fresh.data.generatedAt,
+                      ...rateLimitHeaders(fresh.rateLimit),
                     },
                   });
+                  if (fresh.data.errorInfo?.kind === "rate_limit") {
+                    await storeRateLimitReset(
+                      cache,
+                      request,
+                      env.GITHUB_USERNAME,
+                      fresh.data.errorInfo.rateLimitReset,
+                    );
+                  }
                   await cache.put(cacheKey, freshRes.clone());
-                } catch {
+                } catch (e) {
+                  if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+                    await storeRateLimitReset(
+                      cache,
+                      request,
+                      env.GITHUB_USERNAME,
+                      e.info.rateLimitReset,
+                    );
+                  }
                   // Keep serving cached response.
                 }
               })(),
@@ -153,6 +222,7 @@ export default {
         return withExtraHeaders(cached, {
           "cache-control": cacheControlValue(policy),
           "x-cache": state === "fresh" ? "HIT" : "STALE",
+          ...(activeReset ? { "x-rate-limit-reset": String(activeReset) } : {}),
         });
       }
 
@@ -162,18 +232,37 @@ export default {
           username: env.GITHUB_USERNAME,
           limit: 20,
         });
-        const res = json(fresh, {
+        const res = json(fresh.data, {
           status: 200,
           headers: {
             "cache-control": cacheControlValue(policy),
-            "x-generated-at": fresh.generatedAt,
+            "x-generated-at": fresh.data.generatedAt,
+            ...rateLimitHeaders(fresh.rateLimit),
           },
         });
+        if (fresh.data.errorInfo?.kind === "rate_limit") {
+          await storeRateLimitReset(
+            cache,
+            request,
+            env.GITHUB_USERNAME,
+            fresh.data.errorInfo.rateLimitReset,
+          );
+        }
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return withExtraHeaders(res, { "x-cache": "MISS" });
       } catch (e) {
+        if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+          await storeRateLimitReset(cache, request, env.GITHUB_USERNAME, e.info.rateLimitReset);
+        }
         const message = e instanceof Error ? e.message : "Unknown error";
-        return json({ error: "upstream_error", message }, { status: 502 });
+        const errorInfo = e instanceof GitHubRequestError ? e.info : undefined;
+        return json(
+          { error: "upstream_error", message, errorInfo },
+          {
+            status: 502,
+            headers: rateLimitHeaders(errorInfo ? { reset: errorInfo.rateLimitReset } : undefined),
+          },
+        );
       }
     }
 
@@ -186,8 +275,18 @@ export default {
       if (cached) {
         const age = responseAgeSeconds(cached);
         const state = classifyAge(age, policy);
+        let activeReset: number | null = null;
 
         if (state !== "fresh") {
+          activeReset = await getActiveRateLimitReset(cache, request, env.GITHUB_USERNAME);
+          if (activeReset) {
+            return withExtraHeaders(cached, {
+              "cache-control": cacheControlValue(policy),
+              "x-cache": "STALE",
+              "x-rate-limit-reset": String(activeReset),
+            });
+          }
+
           const lockKey = revalidateLockKey(request, "/api/profile.json", env.GITHUB_USERNAME);
           const lock = await cache.match(lockKey);
           const lockAge = lock ? responseAgeSeconds(lock) : null;
@@ -200,15 +299,24 @@ export default {
               (async () => {
                 try {
                   const fresh = await fetchGitHubUser(env.GITHUB_USERNAME);
-                  const freshRes = json(fresh, {
+                  const freshRes = json(fresh.profile, {
                     status: 200,
                     headers: {
                       "cache-control": cacheControlValue(policy),
                       "x-generated-at": new Date().toISOString(),
+                      ...rateLimitHeaders(fresh.rateLimit),
                     },
                   });
                   await cache.put(cacheKey, freshRes.clone());
-                } catch {
+                } catch (e) {
+                  if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+                    await storeRateLimitReset(
+                      cache,
+                      request,
+                      env.GITHUB_USERNAME,
+                      e.info.rateLimitReset,
+                    );
+                  }
                   // Keep serving cached response.
                 }
               })(),
@@ -219,6 +327,7 @@ export default {
         return withExtraHeaders(cached, {
           "cache-control": cacheControlValue(policy),
           "x-cache": state === "fresh" ? "HIT" : "STALE",
+          ...(activeReset ? { "x-rate-limit-reset": String(activeReset) } : {}),
         });
       }
 
@@ -226,18 +335,29 @@ export default {
       try {
         const fresh = await fetchGitHubUser(env.GITHUB_USERNAME);
         const now = new Date().toISOString();
-        const res = json(fresh, {
+        const res = json(fresh.profile, {
           status: 200,
           headers: {
             "cache-control": cacheControlValue(policy),
             "x-generated-at": now,
+            ...rateLimitHeaders(fresh.rateLimit),
           },
         });
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return withExtraHeaders(res, { "x-cache": "MISS" });
       } catch (e) {
+        if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+          await storeRateLimitReset(cache, request, env.GITHUB_USERNAME, e.info.rateLimitReset);
+        }
         const message = e instanceof Error ? e.message : "Unknown error";
-        return json({ error: "upstream_error", message }, { status: 502 });
+        const errorInfo = e instanceof GitHubRequestError ? e.info : undefined;
+        return json(
+          { error: "upstream_error", message, errorInfo },
+          {
+            status: 502,
+            headers: rateLimitHeaders(errorInfo ? { reset: errorInfo.rateLimitReset } : undefined),
+          },
+        );
       }
     }
 
@@ -250,8 +370,18 @@ export default {
       if (cached) {
         const age = responseAgeSeconds(cached);
         const state = classifyAge(age, policy);
+        let activeReset: number | null = null;
 
         if (state !== "fresh") {
+          activeReset = await getActiveRateLimitReset(cache, request, env.GITHUB_USERNAME);
+          if (activeReset) {
+            return withExtraHeaders(cached, {
+              "cache-control": cacheControlValue(policy),
+              "x-cache": "STALE",
+              "x-rate-limit-reset": String(activeReset),
+            });
+          }
+
           const lockKey = revalidateLockKey(request, "/api/activity.json", env.GITHUB_USERNAME);
           const lock = await cache.match(lockKey);
           const lockAge = lock ? responseAgeSeconds(lock) : null;
@@ -267,15 +397,32 @@ export default {
                     username: env.GITHUB_USERNAME,
                     limit: 20,
                   });
-                  const freshRes = json(fresh, {
+                  const freshRes = json(fresh.data, {
                     status: 200,
                     headers: {
                       "cache-control": cacheControlValue(policy),
-                      "x-generated-at": fresh.generatedAt,
+                      "x-generated-at": fresh.data.generatedAt,
+                      ...rateLimitHeaders(fresh.rateLimit),
                     },
                   });
+                  if (fresh.data.errorInfo?.kind === "rate_limit") {
+                    await storeRateLimitReset(
+                      cache,
+                      request,
+                      env.GITHUB_USERNAME,
+                      fresh.data.errorInfo.rateLimitReset,
+                    );
+                  }
                   await cache.put(cacheKey, freshRes.clone());
-                } catch {
+                } catch (e) {
+                  if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+                    await storeRateLimitReset(
+                      cache,
+                      request,
+                      env.GITHUB_USERNAME,
+                      e.info.rateLimitReset,
+                    );
+                  }
                   // Keep serving cached response.
                 }
               })(),
@@ -286,6 +433,7 @@ export default {
         return withExtraHeaders(cached, {
           "cache-control": cacheControlValue(policy),
           "x-cache": state === "fresh" ? "HIT" : "STALE",
+          ...(activeReset ? { "x-rate-limit-reset": String(activeReset) } : {}),
         });
       }
 
@@ -295,18 +443,37 @@ export default {
           username: env.GITHUB_USERNAME,
           limit: 20,
         });
-        const res = json(fresh, {
+        const res = json(fresh.data, {
           status: 200,
           headers: {
             "cache-control": cacheControlValue(policy),
-            "x-generated-at": fresh.generatedAt,
+            "x-generated-at": fresh.data.generatedAt,
+            ...rateLimitHeaders(fresh.rateLimit),
           },
         });
+        if (fresh.data.errorInfo?.kind === "rate_limit") {
+          await storeRateLimitReset(
+            cache,
+            request,
+            env.GITHUB_USERNAME,
+            fresh.data.errorInfo.rateLimitReset,
+          );
+        }
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return withExtraHeaders(res, { "x-cache": "MISS" });
       } catch (e) {
+        if (e instanceof GitHubRequestError && e.info.kind === "rate_limit") {
+          await storeRateLimitReset(cache, request, env.GITHUB_USERNAME, e.info.rateLimitReset);
+        }
         const message = e instanceof Error ? e.message : "Unknown error";
-        return json({ error: "upstream_error", message }, { status: 502 });
+        const errorInfo = e instanceof GitHubRequestError ? e.info : undefined;
+        return json(
+          { error: "upstream_error", message, errorInfo },
+          {
+            status: 502,
+            headers: rateLimitHeaders(errorInfo ? { reset: errorInfo.rateLimitReset } : undefined),
+          },
+        );
       }
     }
 

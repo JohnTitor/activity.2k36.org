@@ -1,4 +1,16 @@
-import type { ActivityItem, ActivityResponse, PullRequestReviewState } from "../activity/types";
+import type {
+  ActivityErrorInfo,
+  ActivityItem,
+  ActivityResponse,
+  PullRequestReviewState,
+} from "../activity/types";
+import {
+  fetchGitHubJson,
+  fetchGitHubResponse,
+  GitHubErrorInfo,
+  GitHubRequestError,
+  GitHubResponseMeta,
+} from "./client";
 
 type GitHubEvent = {
   id: string;
@@ -16,25 +28,6 @@ type GitHubEvent = {
   created_at: string;
 };
 
-function ghHeaders() {
-  const headers: Record<string, string> = {
-    accept: "application/vnd.github+json",
-    "user-agent": "activity.2k36.org",
-    "x-github-api-version": "2022-11-28",
-  };
-  return headers;
-}
-
-async function fetchGitHubJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: ghHeaders() });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const detail = text ? `: ${text.slice(0, 500)}` : "";
-    throw new Error(`GitHub API error ${res.status}${detail}`);
-  }
-  return (await res.json()) as T;
-}
-
 type RepoApiResponse = {
   fork?: boolean;
 };
@@ -45,6 +38,27 @@ type PullRequestApiResponse = {
   body?: string | null;
   merged_at?: string | null;
 };
+
+type PullRequestMemoEntry = PullRequestApiResponse | { error: GitHubErrorInfo } | null;
+
+type RateLimitInfo = {
+  remaining?: number;
+  reset?: number;
+};
+
+type ActivityFetchResult = {
+  data: ActivityResponse;
+  rateLimit?: RateLimitInfo;
+};
+
+type ErrorTracker = {
+  partial: boolean;
+  errorInfo?: ActivityErrorInfo;
+};
+
+const CONCURRENCY_LIMIT = 4;
+const REPO_CACHE_TTL_SECONDS = 300;
+const PR_CACHE_TTL_SECONDS = 180;
 
 function repoHtmlUrl(repoName: string) {
   return `https://github.com/${repoName}`;
@@ -82,6 +96,237 @@ function reviewStateFromGitHub(input: unknown): PullRequestReviewState {
     default:
       return "unknown";
   }
+}
+
+function updateRateLimit(target: RateLimitInfo, meta?: GitHubResponseMeta | GitHubErrorInfo) {
+  if (!meta) return;
+  if ("rateLimitRemaining" in meta && meta.rateLimitRemaining != null)
+    target.remaining = meta.rateLimitRemaining;
+  if (meta.rateLimitReset != null) target.reset = meta.rateLimitReset;
+}
+
+function recordPartial(tracker: ErrorTracker, error: GitHubErrorInfo) {
+  tracker.partial = true;
+  if (!tracker.errorInfo) tracker.errorInfo = error;
+}
+
+function parseNextLink(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  // Example:
+  // <https://api.github.com/user/123/events?page=2>; rel="next", <...>; rel="last"
+  const parts = linkHeader.split(",");
+  for (const part of parts) {
+    const [rawUrl, ...params] = part
+      .trim()
+      .split(";")
+      .map((s) => s.trim());
+    const rel = params.find((p) => p.startsWith("rel="));
+    if (rel && rel.includes('"next"')) {
+      const m = rawUrl.match(/^<(.+)>$/);
+      return m?.[1] ?? null;
+    }
+  }
+  return null;
+}
+
+function compactRateLimit(rateLimit: RateLimitInfo): RateLimitInfo | undefined {
+  if (rateLimit.remaining == null && rateLimit.reset == null) return undefined;
+  return rateLimit;
+}
+
+function createLimiter(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const runNext = () => {
+    if (active >= limit) return;
+    const job = queue.shift();
+    if (!job) return;
+    active += 1;
+    job();
+  };
+
+  return async function limitTask<T>(fn: () => Promise<T>): Promise<T> {
+    if (limit <= 0) return fn();
+    return await new Promise<T>((resolve, reject) => {
+      queue.push(() => {
+        fn()
+          .then(resolve, reject)
+          .finally(() => {
+            active -= 1;
+            runNext();
+          });
+      });
+      runNext();
+    });
+  };
+}
+
+async function readCachedJson<T>(cache: Cache | null, url: string): Promise<T | null> {
+  if (!cache) return null;
+  try {
+    const res = await cache.match(new Request(url, { method: "GET" }));
+    if (!res) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedJson<T>(
+  cache: Cache | null,
+  url: string,
+  ttlSeconds: number,
+  data: T,
+): Promise<void> {
+  if (!cache) return;
+  const res = new Response(JSON.stringify(data), {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": `public, max-age=${ttlSeconds}`,
+    },
+  });
+  await cache.put(new Request(url, { method: "GET" }), res);
+}
+
+async function fetchEventsPage(
+  url: string,
+  rateLimit: RateLimitInfo,
+): Promise<
+  | { ok: true; events: GitHubEvent[]; nextUrl: string | null }
+  | { ok: false; error: GitHubErrorInfo }
+> {
+  const result = await fetchGitHubResponse(url);
+  if (!result.ok) {
+    updateRateLimit(rateLimit, result.error);
+    if (
+      result.error.status === 422 &&
+      result.error.message?.includes("pagination is limited for this resource")
+    ) {
+      return { ok: true, events: [], nextUrl: null };
+    }
+    return { ok: false, error: result.error };
+  }
+
+  updateRateLimit(rateLimit, result.meta);
+  try {
+    const events = (await result.data.json()) as GitHubEvent[];
+    const nextUrl = parseNextLink(result.data.headers.get("link"));
+    return { ok: true, events, nextUrl };
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        kind: "unknown",
+        status: result.data.status,
+        message: err instanceof Error ? err.message : "Invalid JSON response",
+        requestId: result.meta.requestId,
+      },
+    };
+  }
+}
+
+async function fetchRepoForkStatus(
+  repoApiUrl: string,
+  memo: Map<string, boolean>,
+  cache: Cache | null,
+  limiter: ReturnType<typeof createLimiter>,
+  rateLimit: RateLimitInfo,
+): Promise<boolean> {
+  const cached = memo.get(repoApiUrl);
+  if (typeof cached === "boolean") return cached;
+
+  const cachedJson = await readCachedJson<RepoApiResponse>(cache, repoApiUrl);
+  if (cachedJson) {
+    const isFork = cachedJson.fork === true;
+    memo.set(repoApiUrl, isFork);
+    return isFork;
+  }
+
+  const result = await limiter(() => fetchGitHubJson<RepoApiResponse>(repoApiUrl));
+  if (!result.ok) {
+    updateRateLimit(rateLimit, result.error);
+    memo.set(repoApiUrl, false);
+    return false;
+  }
+
+  updateRateLimit(rateLimit, result.meta);
+  const isFork = result.data.fork === true;
+  memo.set(repoApiUrl, isFork);
+  await writeCachedJson(cache, repoApiUrl, REPO_CACHE_TTL_SECONDS, result.data);
+  return isFork;
+}
+
+async function fetchPullRequest(
+  prApiUrl: string,
+  memo: Map<string, PullRequestMemoEntry>,
+  cache: Cache | null,
+  limiter: ReturnType<typeof createLimiter>,
+  rateLimit: RateLimitInfo,
+): Promise<{ pr: PullRequestApiResponse | null; error?: GitHubErrorInfo }> {
+  const cached = memo.get(prApiUrl);
+  if (cached !== undefined) {
+    if (cached && typeof cached === "object" && "error" in cached) {
+      return { pr: null, error: cached.error };
+    }
+    return { pr: cached ?? null };
+  }
+
+  const cachedJson = await readCachedJson<PullRequestApiResponse>(cache, prApiUrl);
+  if (cachedJson) {
+    memo.set(prApiUrl, cachedJson);
+    return { pr: cachedJson };
+  }
+
+  const result = await limiter(() => fetchGitHubJson<PullRequestApiResponse>(prApiUrl));
+  if (!result.ok) {
+    updateRateLimit(rateLimit, result.error);
+    memo.set(prApiUrl, { error: result.error });
+    return { pr: null, error: result.error };
+  }
+
+  updateRateLimit(rateLimit, result.meta);
+  memo.set(prApiUrl, result.data);
+  await writeCachedJson(cache, prApiUrl, PR_CACHE_TTL_SECONDS, result.data);
+  return { pr: result.data };
+}
+
+type PullRequestPayload = {
+  title?: string;
+  html_url?: string;
+  body?: string | null;
+  merged?: boolean;
+  merged_at?: string | null;
+  url?: string;
+  number?: number;
+};
+
+function extractPullRequestPayload(pr: PullRequestPayload | undefined) {
+  const title = typeof pr?.title === "string" ? pr.title.trim() : undefined;
+  const htmlUrl = typeof pr?.html_url === "string" ? pr.html_url : undefined;
+  const body = typeof pr?.body === "string" ? pr.body : undefined;
+
+  let merged: boolean | undefined;
+  if (typeof pr?.merged === "boolean") merged = pr.merged;
+  if (merged == null && pr && typeof pr === "object" && "merged_at" in pr) {
+    const mergedAt = (pr as { merged_at?: string | null }).merged_at;
+    merged = mergedAt != null;
+  }
+
+  const apiUrl = typeof pr?.url === "string" ? pr.url : undefined;
+  return { title, htmlUrl, body, merged, apiUrl };
+}
+
+function resolvePullRequestApiUrl(
+  event: GitHubEvent,
+  payload: { pull_request?: PullRequestPayload; number?: number },
+) {
+  if (typeof payload.pull_request?.url === "string") return payload.pull_request.url;
+  const prNumber = payload.pull_request?.number ?? payload.number;
+  if (typeof prNumber === "number") {
+    return `https://api.github.com/repos/${event.repo.name}/pulls/${prNumber}`;
+  }
+  return null;
 }
 
 function normalizeEventPreview(event: GitHubEvent): ActivityItem | null {
@@ -238,82 +483,50 @@ function normalizeEventPreview(event: GitHubEvent): ActivityItem | null {
   return null;
 }
 
-function parseNextLink(linkHeader: string | null): string | null {
-  if (!linkHeader) return null;
-  // Example:
-  // <https://api.github.com/user/123/events?page=2>; rel="next", <...>; rel="last"
-  const parts = linkHeader.split(",");
-  for (const part of parts) {
-    const [rawUrl, ...params] = part
-      .trim()
-      .split(";")
-      .map((s) => s.trim());
-    const rel = params.find((p) => p.startsWith("rel="));
-    if (rel && rel.includes('"next"')) {
-      const m = rawUrl.match(/^<(.+)>$/);
-      return m?.[1] ?? null;
-    }
+function needsPullRequestFetch(event: GitHubEvent): string | null {
+  if (event.type === "PullRequestEvent") {
+    const payload = event.payload as {
+      action?: string;
+      number?: number;
+      pull_request?: PullRequestPayload;
+    };
+    if (payload.action !== "opened" && payload.action !== "closed" && payload.action !== "reopened")
+      return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    const needsTitle = !prPayload.title;
+    const needsMerged = payload.action === "closed" && prPayload.merged == null;
+    if (!needsTitle && !needsMerged) return null;
+    return resolvePullRequestApiUrl(event, payload);
   }
+
+  if (event.type === "PullRequestReviewEvent") {
+    const payload = event.payload as { action?: string; pull_request?: PullRequestPayload };
+    if (payload.action !== "created") return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    if (prPayload.title) return null;
+    return resolvePullRequestApiUrl(event, payload);
+  }
+
+  if (event.type === "PullRequestReviewCommentEvent") {
+    const payload = event.payload as { action?: string; pull_request?: PullRequestPayload };
+    if (payload.action !== "created") return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    if (prPayload.title) return null;
+    return resolvePullRequestApiUrl(event, payload);
+  }
+
   return null;
-}
-
-async function fetchEventsPage(
-  url: string,
-): Promise<{ events: GitHubEvent[]; nextUrl: string | null }> {
-  const res = await fetch(url, { headers: ghHeaders() });
-  if (res.status === 422) {
-    const text = await res.text().catch(() => "");
-    // GitHub sometimes returns 422 for deep pagination:
-    // {"message":"In order to keep the API fast for everyone, pagination is limited for this resource.", ...}
-    if (text.includes("pagination is limited for this resource")) {
-      return { events: [], nextUrl: null };
-    }
-    throw new Error(`GitHub API error 422: ${text.slice(0, 500)}`);
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const detail = text ? `: ${text.slice(0, 500)}` : "";
-    throw new Error(`GitHub API error ${res.status}${detail}`);
-  }
-  const events = (await res.json()) as GitHubEvent[];
-  const nextUrl = parseNextLink(res.headers.get("link"));
-  return { events, nextUrl };
-}
-
-async function isForkRepo(repoApiUrl: string, memo: Map<string, boolean>): Promise<boolean> {
-  const cached = memo.get(repoApiUrl);
-  if (typeof cached === "boolean") return cached;
-  try {
-    const repo = await fetchGitHubJson<RepoApiResponse>(repoApiUrl);
-    const isFork = repo.fork === true;
-    memo.set(repoApiUrl, isFork);
-    return isFork;
-  } catch {
-    // If we can't determine it, do not filter it out.
-    memo.set(repoApiUrl, false);
-    return false;
-  }
-}
-
-async function fetchPullRequest(
-  prApiUrl: string,
-  memo: Map<string, PullRequestApiResponse | null>,
-) {
-  const cached = memo.get(prApiUrl);
-  if (cached !== undefined) return cached;
-  try {
-    const pr = await fetchGitHubJson<PullRequestApiResponse>(prApiUrl);
-    memo.set(prApiUrl, pr);
-    return pr;
-  } catch {
-    memo.set(prApiUrl, null);
-    return null;
-  }
 }
 
 async function normalizeEvent(
   event: GitHubEvent,
-  prMemo: Map<string, PullRequestApiResponse | null>,
+  context: {
+    prMemo: Map<string, PullRequestMemoEntry>;
+    cache: Cache | null;
+    limiter: ReturnType<typeof createLimiter>;
+    rateLimit: RateLimitInfo;
+    tracker: ErrorTracker;
+  },
 ): Promise<ActivityItem | null> {
   const actor = {
     login: event.actor.login,
@@ -354,37 +567,74 @@ async function normalizeEvent(
     const payload = event.payload as {
       action?: string;
       number?: number;
-      pull_request?: { url?: string; number?: number; merged?: boolean };
+      pull_request?: PullRequestPayload;
     };
     if (payload.action !== "opened" && payload.action !== "closed" && payload.action !== "reopened")
       return null;
-    const prApiUrl =
-      typeof payload.pull_request?.url === "string"
-        ? payload.pull_request.url
-        : typeof payload.number === "number"
-          ? `https://api.github.com/repos/${event.repo.name}/pulls/${payload.number}`
-          : null;
-    if (!prApiUrl) return null;
 
-    const pr = await fetchPullRequest(prApiUrl, prMemo);
-    const title = pr?.title?.trim();
-    const url = pr?.html_url;
-    if (!title || !url) return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    const prApiUrl = resolvePullRequestApiUrl(event, payload);
+    const prNumber = payload.pull_request?.number ?? payload.number;
+
+    let title = prPayload.title;
+    let url = prPayload.htmlUrl;
+    let summary = summarizeText(prPayload.body);
+    let merged = prPayload.merged;
+
+    const needsFetch = !title || (payload.action === "closed" && merged == null);
+    if (needsFetch && prApiUrl) {
+      const { pr, error } = await fetchPullRequest(
+        prApiUrl,
+        context.prMemo,
+        context.cache,
+        context.limiter,
+        context.rateLimit,
+      );
+      if (pr) {
+        title = title ?? pr.title?.trim();
+        url = url ?? pr.html_url;
+        summary = summary ?? summarizeText(pr.body);
+        if (merged == null) merged = pr.merged_at != null;
+      } else if (error) {
+        recordPartial(context.tracker, error);
+      }
+    }
 
     const kind =
       payload.action === "opened"
         ? "pull_request_opened"
         : payload.action === "reopened"
           ? "pull_request_reopened"
-          : pr?.merged_at
+          : merged
             ? "pull_request_merged"
             : "pull_request_closed";
+
+    if (!url && typeof prNumber === "number") {
+      url = pullRequestHtmlUrl(repo.name, prNumber);
+    }
+
+    if (!title) {
+      const suffix = typeof prNumber === "number" ? ` #${prNumber}` : "";
+      title =
+        kind === "pull_request_merged"
+          ? `Merged pull request${suffix}`
+          : payload.action === "opened"
+            ? `Opened pull request${suffix}`
+            : payload.action === "reopened"
+              ? `Reopened pull request${suffix}`
+              : payload.action === "closed"
+                ? `Closed pull request${suffix}`
+                : `Pull request${suffix}`;
+    }
+
+    if (!url) return null;
+
     return {
       ...base,
       kind,
       title,
       url,
-      summary: summarizeText(pr?.body),
+      summary,
     };
   }
 
@@ -410,23 +660,44 @@ async function normalizeEvent(
   if (event.type === "PullRequestReviewEvent") {
     const payload = event.payload as {
       action?: string;
-      pull_request?: { url?: string; number?: number };
+      pull_request?: PullRequestPayload;
       review?: { html_url?: string; body?: string; state?: string };
     };
     if (payload.action !== "created") return null;
 
-    const prApiUrl =
-      typeof payload.pull_request?.url === "string"
-        ? payload.pull_request.url
-        : typeof payload.pull_request?.number === "number"
-          ? `https://api.github.com/repos/${event.repo.name}/pulls/${payload.pull_request.number}`
-          : null;
-    if (!prApiUrl) return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    const prApiUrl = resolvePullRequestApiUrl(event, payload);
+    const prNumber = payload.pull_request?.number;
 
-    const pr = await fetchPullRequest(prApiUrl, prMemo);
-    const title = pr?.title?.trim();
-    const url = payload.review?.html_url ?? pr?.html_url;
-    if (!title || !url) return null;
+    let title = prPayload.title;
+    let url = payload.review?.html_url ?? prPayload.htmlUrl;
+
+    if (!title && prApiUrl) {
+      const { pr, error } = await fetchPullRequest(
+        prApiUrl,
+        context.prMemo,
+        context.cache,
+        context.limiter,
+        context.rateLimit,
+      );
+      if (pr) {
+        title = pr.title?.trim();
+        url = url ?? pr.html_url;
+      } else if (error) {
+        recordPartial(context.tracker, error);
+      }
+    }
+
+    if (!url && typeof prNumber === "number") {
+      url = pullRequestHtmlUrl(repo.name, prNumber);
+    }
+
+    if (!title) {
+      const suffix = typeof prNumber === "number" ? ` #${prNumber}` : "";
+      title = `Review on pull request${suffix}`;
+    }
+
+    if (!url) return null;
 
     const reviewState = reviewStateFromGitHub(payload.review?.state);
     const summary = summarizeText(payload.review?.body);
@@ -449,22 +720,44 @@ async function normalizeEvent(
   if (event.type === "PullRequestReviewCommentEvent") {
     const payload = event.payload as {
       action?: string;
-      pull_request?: { url?: string; number?: number };
+      pull_request?: PullRequestPayload;
       comment?: { html_url?: string; body?: string };
     };
     if (payload.action !== "created") return null;
-    const prApiUrl =
-      typeof payload.pull_request?.url === "string"
-        ? payload.pull_request.url
-        : typeof payload.pull_request?.number === "number"
-          ? `https://api.github.com/repos/${event.repo.name}/pulls/${payload.pull_request.number}`
-          : null;
-    if (!prApiUrl) return null;
 
-    const pr = await fetchPullRequest(prApiUrl, prMemo);
-    const title = pr?.title?.trim();
-    const url = payload.comment?.html_url;
-    if (!title || !url) return null;
+    const prPayload = extractPullRequestPayload(payload.pull_request);
+    const prApiUrl = resolvePullRequestApiUrl(event, payload);
+    const prNumber = payload.pull_request?.number;
+
+    let title = prPayload.title;
+    let url = payload.comment?.html_url ?? prPayload.htmlUrl;
+
+    if (!title && prApiUrl) {
+      const { pr, error } = await fetchPullRequest(
+        prApiUrl,
+        context.prMemo,
+        context.cache,
+        context.limiter,
+        context.rateLimit,
+      );
+      if (pr) {
+        title = pr.title?.trim();
+      } else if (error) {
+        recordPartial(context.tracker, error);
+      }
+    }
+
+    if (!url && typeof prNumber === "number") {
+      url = pullRequestHtmlUrl(repo.name, prNumber);
+    }
+
+    if (!title) {
+      const suffix = typeof prNumber === "number" ? ` #${prNumber}` : "";
+      title = `Review comment on pull request${suffix}`;
+    }
+
+    if (!url) return null;
+
     return {
       ...base,
       kind: "pull_request_review_comment",
@@ -500,7 +793,7 @@ export async function getRecentActivity(options: {
   limit: number;
   perPage?: number;
   maxPages?: number;
-}): Promise<ActivityResponse> {
+}): Promise<ActivityFetchResult> {
   const limit = Math.max(1, Math.min(100, options.limit));
   const perPage = Math.max(1, Math.min(100, options.perPage ?? 100));
   const maxPages = Math.max(1, Math.min(10, options.maxPages ?? 5));
@@ -508,7 +801,13 @@ export async function getRecentActivity(options: {
   const items: ActivityItem[] = [];
   const seenUrls = new Set<string>();
   const forkMemo = new Map<string, boolean>();
-  const prMemo = new Map<string, PullRequestApiResponse | null>();
+  const prMemo = new Map<string, PullRequestMemoEntry>();
+  const tracker: ErrorTracker = { partial: false };
+  const rateLimit: RateLimitInfo = {};
+  const cache = typeof caches === "undefined" ? null : caches.default;
+
+  const repoLimiter = createLimiter(CONCURRENCY_LIMIT);
+  const prLimiter = createLimiter(CONCURRENCY_LIMIT);
 
   const firstUrl = new URL(`https://api.github.com/users/${options.username}/events/public`);
   firstUrl.searchParams.set("per_page", String(perPage));
@@ -518,47 +817,83 @@ export async function getRecentActivity(options: {
   let pageCount = 0;
 
   while (nextUrl && pageCount < maxPages) {
-    pageCount++;
-    const { events, nextUrl: next } = await fetchEventsPage(nextUrl);
+    pageCount += 1;
+
+    const pageResult = await fetchEventsPage(nextUrl, rateLimit);
+    if (!pageResult.ok) {
+      if (items.length > 0) {
+        recordPartial(tracker, pageResult.error);
+        break;
+      }
+      throw new GitHubRequestError(pageResult.error);
+    }
+
+    const { events, nextUrl: next } = pageResult;
     if (!events.length) break;
 
-    for (const ev of events) {
-      const item = await normalizeEvent(ev, prMemo);
-      if (!item) continue;
+    const repoUrls = Array.from(new Set(events.map((event) => event.repo.url)));
+    await Promise.all(
+      repoUrls.map((repoUrl) =>
+        fetchRepoForkStatus(repoUrl, forkMemo, cache, repoLimiter, rateLimit),
+      ),
+    );
 
-      // Ignore fork repos
-      if (await isForkRepo(ev.repo.url, forkMemo)) continue;
+    const candidates = events.filter((event) => !forkMemo.get(event.repo.url));
+    const prApiUrls = new Set<string>();
+
+    for (const event of candidates) {
+      const prApiUrl = needsPullRequestFetch(event);
+      if (prApiUrl) prApiUrls.add(prApiUrl);
+    }
+
+    await Promise.all(
+      Array.from(prApiUrls).map((prUrl) =>
+        fetchPullRequest(prUrl, prMemo, cache, prLimiter, rateLimit),
+      ),
+    );
+
+    for (const ev of candidates) {
+      const item = await normalizeEvent(ev, {
+        prMemo,
+        cache,
+        limiter: prLimiter,
+        rateLimit,
+        tracker,
+      });
+      if (!item) continue;
 
       if (seenUrls.has(item.url)) continue;
       seenUrls.add(item.url);
 
       items.push(item);
-      if (items.length >= limit) {
-        return {
-          username: options.username,
-          generatedAt: new Date().toISOString(),
-          items: items.slice(0, limit),
-        };
-      }
+      if (items.length >= limit) break;
     }
 
+    if (items.length >= limit) break;
     nextUrl = next;
   }
 
   items.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
-  return {
+  const response: ActivityResponse = {
     username: options.username,
     generatedAt: new Date().toISOString(),
     items: items.slice(0, limit),
   };
+
+  if (tracker.partial) {
+    response.partial = true;
+    if (tracker.errorInfo) response.errorInfo = tracker.errorInfo;
+  }
+
+  return { data: response, rateLimit: compactRateLimit(rateLimit) };
 }
 
 export async function getRecentActivityPreview(options: {
   username: string;
   limit: number;
   perPage?: number;
-}): Promise<ActivityResponse> {
+}): Promise<ActivityFetchResult> {
   const limit = Math.max(1, Math.min(100, options.limit));
   const perPage = Math.max(1, Math.min(100, options.perPage ?? 100));
 
@@ -566,12 +901,16 @@ export async function getRecentActivityPreview(options: {
   url.searchParams.set("per_page", String(perPage));
   url.searchParams.set("page", "1");
 
-  const { events } = await fetchEventsPage(url.toString());
+  const rateLimit: RateLimitInfo = {};
+  const pageResult = await fetchEventsPage(url.toString(), rateLimit);
+  if (!pageResult.ok) {
+    throw new GitHubRequestError(pageResult.error);
+  }
 
   const items: ActivityItem[] = [];
   const seenUrls = new Set<string>();
 
-  for (const ev of events) {
+  for (const ev of pageResult.events) {
     const item = normalizeEventPreview(ev);
     if (!item) continue;
     if (seenUrls.has(item.url)) continue;
@@ -581,8 +920,11 @@ export async function getRecentActivityPreview(options: {
   }
 
   return {
-    username: options.username,
-    generatedAt: new Date().toISOString(),
-    items: items.slice(0, limit),
+    data: {
+      username: options.username,
+      generatedAt: new Date().toISOString(),
+      items: items.slice(0, limit),
+    },
+    rateLimit: compactRateLimit(rateLimit),
   };
 }

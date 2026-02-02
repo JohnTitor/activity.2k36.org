@@ -49,6 +49,15 @@ export function profileCacheKey(request: Request, username: string) {
   return new Request(url.toString(), { method: "GET" });
 }
 
+export function rateLimitCacheKey(request: Request, username: string) {
+  const url = new URL(request.url);
+  url.pathname = "/api/github-rate-limit";
+  url.search = "";
+  url.searchParams.set("username", username);
+  url.searchParams.set("v", "1");
+  return new Request(url.toString(), { method: "GET" });
+}
+
 export function revalidateLockKey(request: Request, pathname: string, username: string) {
   const url = new URL(request.url);
   url.pathname = pathname;
@@ -79,4 +88,33 @@ export function withExtraHeaders(res: Response, extra: Record<string, string>) {
   const headers = new Headers(res.headers);
   for (const [k, v] of Object.entries(extra)) headers.set(k, v);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+export async function readRateLimitReset(
+  cache: Cache,
+  request: Request,
+  username: string,
+): Promise<number | null> {
+  const res = await cache.match(rateLimitCacheKey(request, username));
+  if (!res) return null;
+  const raw = res.headers.get("x-rate-limit-reset") ?? (await res.text().catch(() => ""));
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+export async function writeRateLimitReset(
+  cache: Cache,
+  request: Request,
+  username: string,
+  resetEpochSeconds: number,
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = Math.max(0, resetEpochSeconds - now);
+  const res = new Response(null, {
+    headers: {
+      "cache-control": `public, max-age=${ttl}`,
+      "x-rate-limit-reset": String(resetEpochSeconds),
+    },
+  });
+  await cache.put(rateLimitCacheKey(request, username), res);
 }

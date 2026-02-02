@@ -34,6 +34,24 @@ export type PullRequestReviewState =
   | "pending"
   | "unknown";
 
+export type ActivityErrorInfo = {
+  kind:
+    | "rate_limit"
+    | "unauthorized"
+    | "forbidden"
+    | "not_found"
+    | "validation"
+    | "server"
+    | "network"
+    | "timeout"
+    | "unknown";
+  status?: number;
+  retryAfter?: number;
+  rateLimitReset?: number;
+  requestId?: string;
+  message?: string;
+};
+
 export type ActivityItem = {
   id: string;
   kind: ActivityKind;
@@ -51,4 +69,6 @@ export type ActivityResponse = {
   username: string;
   generatedAt: string;
   items: ActivityItem[];
+  partial?: boolean;
+  errorInfo?: ActivityErrorInfo;
 };
