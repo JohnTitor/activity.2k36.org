@@ -365,12 +365,14 @@ export default function App() {
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(900px_circle_at_15%_5%,rgba(14,165,233,0.12),transparent_45%),radial-gradient(700px_circle_at_85%_0%,rgba(168,85,247,0.10),transparent_40%)] dark:bg-[radial-gradient(900px_circle_at_15%_5%,rgba(14,165,233,0.18),transparent_50%),radial-gradient(700px_circle_at_85%_0%,rgba(168,85,247,0.14),transparent_45%)]" />
 
-      <div className="mx-auto max-w-4xl px-6 py-12">
+      <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-12">
         <header className="space-y-6">
           <div className="flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-center">
             <div className="min-w-0">
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight">activity.2k36.org</h1>
-              <p className="mt-2 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+              <h1 className="mt-3 break-words text-2xl font-semibold tracking-tight sm:text-3xl">
+                activity.2k36.org
+              </h1>
+              <p className="mt-2 break-words text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
                 {subtitle}
               </p>
             </div>
@@ -449,11 +451,11 @@ export default function App() {
           ) : null}
 
           {state.status === "loading" ? (
-            <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-4 before:w-px before:bg-zinc-200/70 before:content-[''] dark:before:bg-zinc-800/70">
+            <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-3 before:w-px before:bg-zinc-200/70 before:content-[''] sm:before:left-4 dark:before:bg-zinc-800/70">
               {Array.from({ length: 6 }).map((_, i) => (
-                <li key={i} className="relative pl-10">
+                <li key={i} className="relative pl-8 sm:pl-10">
                   <span
-                    className="absolute left-2.5 top-6 h-3 w-3 rounded-full bg-zinc-300 ring-4 ring-zinc-50 dark:bg-zinc-700 dark:ring-zinc-950"
+                    className="absolute left-2 top-6 h-3 w-3 rounded-full bg-zinc-300 ring-4 ring-zinc-50 sm:left-2.5 dark:bg-zinc-700 dark:ring-zinc-950"
                     aria-hidden="true"
                   />
                   <div className="animate-pulse rounded-2xl border border-zinc-200/70 bg-white/50 p-4 shadow-sm backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-900/30">
@@ -495,7 +497,7 @@ export default function App() {
           {state.status === "loaded" ? <ActivityList items={state.data.items} /> : null}
         </main>
 
-        <footer className="mt-14 flex items-center justify-between gap-4 border-t border-zinc-200/70 pt-6 text-xs text-zinc-500 dark:border-zinc-800/70 dark:text-zinc-500">
+        <footer className="mt-14 flex flex-col items-start gap-2 border-t border-zinc-200/70 pt-6 text-xs text-zinc-500 sm:flex-row sm:items-center sm:justify-between sm:gap-4 dark:border-zinc-800/70 dark:text-zinc-500">
           <p className="font-mono text-[11px]">© 2026 Yuki Okushi. All Rights Reserved.</p>
           <a
             className="inline-flex font-mono text-[11px] underline-offset-2 hover:underline"

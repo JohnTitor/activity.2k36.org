@@ -102,15 +102,15 @@ export function ActivityItem({ item }: { item: ActivityItemType }) {
   const absolute = formatDateTime(item.createdAt);
 
   return (
-    <article className="rounded-2xl border border-zinc-200/70 bg-white/50 p-4 shadow-sm backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-900/30">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+    <article className="min-w-0 rounded-2xl border border-zinc-200/70 bg-white/50 p-4 shadow-sm backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-900/30">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2">
         <span
           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
         >
           {label}
         </span>
         <a
-          className="font-mono text-[11px] text-zinc-600 no-underline hover:underline dark:text-zinc-400"
+          className="min-w-0 break-words font-mono text-[11px] text-zinc-600 no-underline hover:underline dark:text-zinc-400"
           href={item.repo.url}
           target="_blank"
           rel="noreferrer"
@@ -123,7 +123,7 @@ export function ActivityItem({ item }: { item: ActivityItemType }) {
         </span>
       </div>
 
-      <h3 className="mt-2 text-base font-medium leading-snug text-zinc-900 dark:text-zinc-100">
+      <h3 className="mt-2 break-words text-base font-medium leading-snug text-zinc-900 dark:text-zinc-100">
         <a
           className="no-underline hover:underline"
           href={item.url}
@@ -135,7 +135,7 @@ export function ActivityItem({ item }: { item: ActivityItemType }) {
       </h3>
 
       {item.summary ? (
-        <p className="mt-2 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+        <p className="mt-2 break-words text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
           {item.summary}
         </p>
       ) : null}

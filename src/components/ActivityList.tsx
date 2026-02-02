@@ -38,11 +38,11 @@ function dotColor(kind: ActivityItemType["kind"], reviewState?: ActivityItemType
 
 export function ActivityList({ items }: { items: ActivityItemType[] }) {
   return (
-    <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-4 before:w-px before:bg-zinc-200/70 before:content-[''] dark:before:bg-zinc-800/70">
+    <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-3 before:w-px before:bg-zinc-200/70 before:content-[''] sm:before:left-4 dark:before:bg-zinc-800/70">
       {items.map((item) => (
-        <li key={item.id} className="relative pl-10">
+        <li key={item.id} className="relative pl-8 sm:pl-10">
           <span
-            className={`absolute left-2.5 top-6 h-3 w-3 rounded-full ring-4 ring-zinc-50 ${dotColor(
+            className={`absolute left-2 top-6 h-3 w-3 rounded-full ring-4 ring-zinc-50 sm:left-2.5 ${dotColor(
               item.kind,
               item.reviewState,
             )} dark:ring-zinc-950`}
