@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { ActivityList } from "./components/ActivityList";
-import type { ActivityResponse } from "./lib/activity/types";
+import type { ActivityErrorInfo, ActivityResponse } from "./lib/activity/types";
 
 type ActivitySource = "preview" | "full";
 
 type LoadState =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; detail?: string; errorInfo?: ActivityErrorInfo }
   | { status: "loaded"; data: ActivityResponse; source: ActivitySource };
 
 type Profile = {
@@ -30,6 +30,24 @@ type CachedActivity = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+const ERROR_KINDS = new Set<ActivityErrorInfo["kind"]>([
+  "rate_limit",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "validation",
+  "server",
+  "network",
+  "timeout",
+  "unknown",
+]);
+
+function isActivityErrorInfo(value: unknown): value is ActivityErrorInfo {
+  if (!isRecord(value)) return false;
+  const kind = value.kind;
+  return typeof kind === "string" && ERROR_KINDS.has(kind as ActivityErrorInfo["kind"]);
 }
 
 function isActivityItem(value: unknown): value is ActivityResponse["items"][number] {
@@ -101,6 +119,8 @@ function shouldApplyActivity(next: ActivityResponse, source: ActivitySource, pre
     if (nextTime < prevTime) return false;
   }
 
+  if (prev.data.partial !== next.partial) return true;
+
   if (source === "full" && prev.source !== "full") return true;
   return !isSameActivitySnapshot(next, prev.data);
 }
@@ -154,6 +174,74 @@ function writeCachedActivity(data: ActivityResponse, source: ActivitySource) {
   } catch {
     // Ignore cache write failures (private mode, quota, etc).
   }
+}
+
+class ActivityLoadError extends Error {
+  detail?: string;
+  errorInfo?: ActivityErrorInfo;
+
+  constructor(message: string, detail?: string, errorInfo?: ActivityErrorInfo) {
+    super(message);
+    this.name = "ActivityLoadError";
+    this.detail = detail;
+    this.errorInfo = errorInfo;
+  }
+}
+
+function friendlyErrorMessage(info?: ActivityErrorInfo) {
+  switch (info?.kind) {
+    case "rate_limit":
+      return "GitHub API rate limit reached. Please try again later.";
+    case "network":
+      return "Network error while contacting GitHub.";
+    case "timeout":
+      return "GitHub API request timed out.";
+    case "server":
+      return "GitHub API is temporarily unavailable.";
+    case "unauthorized":
+    case "forbidden":
+      return "GitHub API rejected the request.";
+    case "not_found":
+      return "GitHub API endpoint was not found.";
+    case "validation":
+      return "GitHub API rejected the request.";
+    default:
+      return null;
+  }
+}
+
+function formatRateLimitReset(reset?: number) {
+  if (!reset) return null;
+  const d = new Date(reset * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(d);
+}
+
+async function parseErrorResponse(res: Response): Promise<{
+  message: string;
+  detail?: string;
+  errorInfo?: ActivityErrorInfo;
+}> {
+  const text = await res.text().catch(() => "");
+  let message = text || `HTTP ${res.status}`;
+  let errorInfo: ActivityErrorInfo | undefined;
+
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (typeof parsed.message === "string") message = parsed.message;
+      if (isActivityErrorInfo(parsed.errorInfo)) errorInfo = parsed.errorInfo;
+    } catch {
+      // Ignore JSON parse failures.
+    }
+  }
+
+  const friendly = friendlyErrorMessage(errorInfo);
+  if (friendly) {
+    return { message: friendly, detail: message, errorInfo };
+  }
+
+  return { message, errorInfo };
 }
 
 function formatGeneratedAt(iso: string) {
@@ -235,14 +323,13 @@ export default function App() {
           signal: ac.signal,
         });
         if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(text || `HTTP ${res.status}`);
+          const error = await parseErrorResponse(res);
+          throw new ActivityLoadError(error.message, error.detail, error.errorInfo);
         }
         const data = (await res.json()) as ActivityResponse;
         applyActivity(data, "full");
       } catch (e) {
         if (ac.signal.aborted) return;
-        const message = e instanceof Error ? e.message : "Unknown error";
         const cached = readCachedActivity();
         if (cached) {
           setState((prev) =>
@@ -252,7 +339,12 @@ export default function App() {
           );
           return;
         }
-        setState((prev) => (prev.status === "loaded" ? prev : { status: "error", message }));
+        const message = e instanceof Error ? e.message : "Unknown error";
+        const detail = e instanceof ActivityLoadError ? e.detail : undefined;
+        const errorInfo = e instanceof ActivityLoadError ? e.errorInfo : undefined;
+        setState((prev) =>
+          prev.status === "loaded" ? prev : { status: "error", message, detail, errorInfo },
+        );
       }
     }
 
@@ -264,6 +356,10 @@ export default function App() {
   const subtitle = "Latest GitHub activities for @JohnTitor";
 
   const profile = profileState.status === "loaded" ? profileState.profile : null;
+  const partialReset =
+    state.status === "loaded" ? formatRateLimitReset(state.data.errorInfo?.rateLimitReset) : null;
+  const errorReset =
+    state.status === "error" ? formatRateLimitReset(state.errorInfo?.rateLimitReset) : null;
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
@@ -337,6 +433,21 @@ export default function App() {
         </header>
 
         <main className="mt-10">
+          {state.status === "loaded" && state.data.partial ? (
+            <div className="mb-6 rounded-2xl border border-amber-200/70 bg-white/50 p-4 text-sm text-zinc-700 shadow-sm backdrop-blur dark:border-amber-900/40 dark:bg-zinc-900/30 dark:text-zinc-300">
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                {state.data.errorInfo?.kind === "rate_limit"
+                  ? "Showing partial activity due to GitHub API rate limits."
+                  : "Showing partial activity due to GitHub API errors."}
+              </p>
+              {partialReset ? (
+                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                  Rate limit resets at {partialReset}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           {state.status === "loading" ? (
             <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-4 before:w-px before:bg-zinc-200/70 before:content-[''] dark:before:bg-zinc-800/70">
               {Array.from({ length: 6 }).map((_, i) => (
@@ -361,9 +472,17 @@ export default function App() {
           {state.status === "error" ? (
             <div className="space-y-3 rounded-2xl border border-red-200/70 bg-white/50 p-4 text-sm text-zinc-700 shadow-sm backdrop-blur dark:border-red-900/40 dark:bg-zinc-900/30 dark:text-zinc-300">
               <p className="font-medium text-red-700 dark:text-red-300">Failed to load activity</p>
-              <p className="break-words font-mono text-[11px] text-zinc-500 dark:text-zinc-500">
-                {state.message}
-              </p>
+              <p className="text-xs text-zinc-600 dark:text-zinc-400">{state.message}</p>
+              {state.detail ? (
+                <p className="break-words font-mono text-[11px] text-zinc-500 dark:text-zinc-500">
+                  {state.detail}
+                </p>
+              ) : null}
+              {errorReset ? (
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                  Rate limit resets at {errorReset}.
+                </p>
+              ) : null}
               <p className="text-xs text-zinc-600 dark:text-zinc-400">
                 For local development, start the Worker API in another terminal:{" "}
                 <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-950/40">
