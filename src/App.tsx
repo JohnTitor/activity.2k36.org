@@ -434,7 +434,7 @@ export default function App() {
           <div className="h-px w-full bg-gradient-to-r from-transparent via-zinc-200/80 to-transparent dark:via-zinc-800/80" />
         </header>
 
-        <main className="mt-10">
+        <main className="mt-10 min-w-0">
           {state.status === "loaded" && state.data.partial ? (
             <div className="mb-6 rounded-2xl border border-amber-200/70 bg-white/50 p-4 text-sm text-zinc-700 shadow-sm backdrop-blur dark:border-amber-900/40 dark:bg-zinc-900/30 dark:text-zinc-300">
               <p className="font-medium text-amber-700 dark:text-amber-300">
@@ -451,9 +451,9 @@ export default function App() {
           ) : null}
 
           {state.status === "loading" ? (
-            <ol className="relative grid gap-6 before:absolute before:inset-y-0 before:left-3 before:w-px before:bg-zinc-200/70 before:content-[''] sm:before:left-4 dark:before:bg-zinc-800/70">
+            <ol className="relative grid min-w-0 grid-cols-1 gap-6 before:absolute before:inset-y-0 before:left-3 before:w-px before:bg-zinc-200/70 before:content-[''] sm:before:left-4 dark:before:bg-zinc-800/70">
               {Array.from({ length: 6 }).map((_, i) => (
-                <li key={i} className="relative pl-8 sm:pl-10">
+                <li key={i} className="relative min-w-0 pl-8 sm:pl-10">
                   <span
                     className="absolute left-2 top-6 h-3 w-3 rounded-full bg-zinc-300 ring-4 ring-zinc-50 sm:left-2.5 dark:bg-zinc-700 dark:ring-zinc-950"
                     aria-hidden="true"
