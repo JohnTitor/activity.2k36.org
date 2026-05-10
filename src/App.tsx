@@ -488,7 +488,7 @@ export default function App() {
               <p className="text-xs text-zinc-600 dark:text-zinc-400">
                 For local development, start the Worker API in another terminal:{" "}
                 <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-950/40">
-                  pnpm worker:dev
+                  aube run worker:dev
                 </code>
               </p>
             </div>

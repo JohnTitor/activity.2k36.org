@@ -23,7 +23,7 @@ Notes:
 ### Install dependencies
 
 ```bash
-pnpm install
+aube install
 ```
 
 ### Run
@@ -33,13 +33,13 @@ Use two terminals:
 - Terminal A (Worker API):
 
 ```bash
-pnpm worker:dev
+aube run worker:dev
 ```
 
 - Terminal B (Frontend):
 
 ```bash
-pnpm dev
+aube run dev
 ```
 
 Vite proxies `/api/*` to the Worker at `http://127.0.0.1:8787`.
@@ -47,17 +47,20 @@ Vite proxies `/api/*` to the Worker at `http://127.0.0.1:8787`.
 ## Build
 
 ```bash
-pnpm build
+aube run build
 ```
 
 ## Deploy (Cloudflare Workers)
 
 ```bash
-pnpm deploy
+aube run deploy
 ```
 
 - Change `vars.GITHUB_USERNAME` in `wrangler.toml` to target a different user
 - Attach the custom domain `activity.2k36.org` to the Worker in Cloudflare (Custom Domain / Route)
+- For Cloudflare Workers Builds, set build variable `SKIP_DEPENDENCY_INSTALL=1`
+- Set the Cloudflare build command to `npm install -g --ignore-scripts=false @endevco/aube@1.9.1 && aube ci && aube run build`
+- Keep the Cloudflare deploy command as `npx wrangler deploy` for production branches and `npx wrangler versions upload` for preview branches
 
 ## API
 
