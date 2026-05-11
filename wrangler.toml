@@ -1,4 +1,3 @@
-"$schema" = "./node_modules/wrangler/config-schema.json"
 name = "activity-2k36-org"
 main = "worker/src/index.ts"
 compatibility_date = "2026-01-14"

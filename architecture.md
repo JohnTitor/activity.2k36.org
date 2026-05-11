@@ -190,13 +190,12 @@ sequenceDiagram
 
 ## Local Development
 
-- Start Worker API: `aube run worker:dev` (port 8787).
-- Start frontend: `aube run dev` (Vite proxy to Worker at `/api/*`).
+- Start Worker API: `pnpm worker:dev` (port 8787).
+- Start frontend: `pnpm dev` (Vite proxy to Worker at `/api/*`).
 
 ## Deployment Notes
 
-- `aube run build` outputs `dist/` and is served by the Worker via `ASSETS`.
-- `aube run deploy` builds `dist/` before running `wrangler deploy`.
+- `pnpm build` outputs `dist/` and is served by the Worker via `ASSETS`.
 - `wrangler.toml` controls target user and domain:
   - `GITHUB_USERNAME` (default: `JohnTitor`)
   - `SITE_DOMAIN` (default: `activity.2k36.org`)

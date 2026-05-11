@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "worker:dev": "wrangler dev worker/src/index.ts --port 8787 --local",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "pnpm build && wrangler deploy",
     "typecheck": "tsc -b --pretty false",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
@@ -35,5 +35,5 @@
     "vite": "^8.0.0",
     "wrangler": "^4.61.1"
   },
-  "packageManager": "aube@1.9.1"
+  "packageManager": "pnpm@10.33.4"
 }
