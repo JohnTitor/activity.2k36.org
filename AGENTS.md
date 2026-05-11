@@ -22,11 +22,11 @@
 
 ## Build, Test, and Development Commands
 
-- `aube install`: install dependencies.
-- `aube run dev`: start the Vite dev server.
-- `aube run worker:dev`: start the Worker on `http://127.0.0.1:8787` (Vite proxies `/api/*`).
-- `aube run build`, `aube run preview`, `aube run deploy`: build, preview, and deploy.
-- `aube run typecheck`, `aube run lint`, `aube run fmt`: enforce TypeScript, linting, and formatting.
+- `pnpm install`: install dependencies.
+- `pnpm dev`: start the Vite dev server.
+- `pnpm worker:dev`: start the Worker on `http://127.0.0.1:8787` (Vite proxies `/api/*`).
+- `pnpm build`, `pnpm preview`, `pnpm deploy`: build, preview, and deploy.
+- `pnpm typecheck`, `pnpm lint`, `pnpm fmt`: enforce TypeScript, linting, and formatting.
 
 ## Coding Style & Naming Conventions
 
@@ -36,7 +36,7 @@
 
 ## Testing Guidelines
 
-- No automated tests yet. Validate changes with `aube run dev` + `aube run worker:dev` and note manual testing in PRs.
+- No automated tests yet. Validate changes with `pnpm dev` + `pnpm worker:dev` and note manual testing in PRs.
 
 ## Commit & Pull Request Guidelines
 
